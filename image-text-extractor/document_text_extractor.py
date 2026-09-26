@@ -189,6 +189,17 @@ extraction_running = False
 
 current_preview_image = None
 
+# ============================================================
+# Projektordner und eigene Tesseract-Sprachen
+# ============================================================
+#
+# Dadurch verwenden Zuhause, Büro und andere Rechner
+# immer dieselben Sprachdateien aus diesem Projekt.
+# ============================================================
+
+BASE_FOLDER = Path(__file__).resolve().parent
+
+TESSDATA_FOLDER = BASE_FOLDER / "tessdata"
 
 # ============================================================
 # Unterstützte Dateiendungen
@@ -247,14 +258,13 @@ LANGUAGES = {
 
 def find_tesseract():
 
-    # --------------------------------------------------------
-    # Zuerst im Windows PATH suchen
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. Zuerst Windows PATH prüfen
+    # ========================================================
 
     found = shutil.which(
         "tesseract"
     )
-
 
     if found:
 
@@ -262,40 +272,46 @@ def find_tesseract():
 
         return True
 
-
-    # --------------------------------------------------------
-    # Typische Installationsorte
-    # --------------------------------------------------------
-
-    user_tesseract = (
-
-        Path.home()
-
-        / "AppData"
-
-        / "Local"
-
-        / "Tesseract-OCR"
-
-        / "tesseract.exe"
-
-    )
-
+    # ========================================================
+    # 2. Verschiedene mögliche Installationen suchen
+    # ========================================================
 
     possible_paths = [
 
-        user_tesseract,
+        # ----------------------------------------------------
+        # Installation wie auf deinem Büro-PC
+        # ----------------------------------------------------
+
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "Tesseract-OCR"
+        / "tesseract.exe",
+
+
+        # ----------------------------------------------------
+        # Normale Windows-Installation
+        # ----------------------------------------------------
 
         Path(
             r"C:\Program Files\Tesseract-OCR\tesseract.exe"
         ),
 
+
         Path(
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
+        ),
+
+
+        # ----------------------------------------------------
+        # PDF24 Installation wie auf deinem Heim-PC
+        # ----------------------------------------------------
+
+        Path(
+            r"C:\Program Files\PDF24\tesseract\tesseract.exe"
         )
 
     ]
-
 
     for path in possible_paths:
 
@@ -307,15 +323,18 @@ def find_tesseract():
 
             return True
 
-
     return False
-
 
 # ============================================================
 # Tesseract überprüfen
 # ============================================================
 
+
 def check_tesseract():
+
+    # ========================================================
+    # Tesseract.exe finden
+    # ========================================================
 
     if not find_tesseract():
 
@@ -323,86 +342,90 @@ def check_tesseract():
 
             "Tesseract nicht gefunden",
 
-            "Tesseract OCR wurde nicht gefunden.\n\n"
-            "Bitte Tesseract installieren oder den "
-            "Installationspfad überprüfen."
+            "Tesseract OCR wurde auf diesem Computer "
+            "nicht gefunden.\n\n"
+            "Bitte Tesseract installieren und danach "
+            "das Programm erneut starten."
 
         )
 
         return False
 
+    # ========================================================
+    # Projektinternen tessdata-Ordner prüfen
+    # ========================================================
 
-    try:
-
-        available_languages = (
-            pytesseract.get_languages(
-                config=""
-            )
-        )
-
-
-    except Exception as error:
+    if not TESSDATA_FOLDER.exists():
 
         messagebox.showerror(
 
-            "Tesseract Fehler",
+            "tessdata fehlt",
 
-            f"Tesseract konnte nicht gestartet werden:\n\n"
-            f"{error}"
+            "Der Sprachordner wurde nicht gefunden:\n\n"
+            f"{TESSDATA_FOLDER}\n\n"
+            "Der Ordner 'tessdata' muss neben "
+            "'document_text_extractor.py' liegen."
 
         )
 
         return False
 
-
-    # --------------------------------------------------------
-    # Gewählte Sprache prüfen
-    # --------------------------------------------------------
+    # ========================================================
+    # Gewählte Sprache bestimmen
+    # ========================================================
 
     language_code = LANGUAGES[
         language_box.get()
     ]
 
-
-    required = language_code.split(
+    required_languages = language_code.split(
         "+"
     )
 
+    # ========================================================
+    # Prüfen, ob alle Sprachdateien vorhanden sind
+    # ========================================================
 
-    missing = [
+    missing_languages = []
 
-        language
+    for language in required_languages:
 
-        for language in required
+        language_file = (
 
-        if language not in available_languages
+            TESSDATA_FOLDER
 
-    ]
+            / f"{language}.traineddata"
 
+        )
 
-    if missing:
+        if not language_file.exists():
+
+            missing_languages.append(
+                language
+            )
+
+    if missing_languages:
 
         messagebox.showerror(
 
             "Sprachdateien fehlen",
 
-            "Folgende OCR-Sprachen fehlen:\n\n"
-            + "\n".join(missing)
+            "Folgende OCR-Sprachen fehlen im "
+            "Projektordner:\n\n"
+            + "\n".join(missing_languages)
             + "\n\n"
-            "Bitte die entsprechenden .traineddata-Dateien "
-            "im Tesseract tessdata-Ordner installieren."
+            f"Erwarteter Ordner:\n{TESSDATA_FOLDER}"
 
         )
 
         return False
 
-
     return True
-
 
 # ============================================================
 # Dateien auswählen
 # ============================================================
+
 
 def add_files():
 
@@ -447,21 +470,17 @@ def add_files():
 
     )
 
-
     if not files:
 
         return
 
-
     unsupported = []
-
 
     for file_path in files:
 
         extension = Path(
             file_path
         ).suffix.lower()
-
 
         if extension not in SUPPORTED_EXTENSIONS:
 
@@ -471,16 +490,13 @@ def add_files():
 
             continue
 
-
         if file_path not in selected_files:
 
             selected_files.append(
                 file_path
             )
 
-
     refresh_file_list()
-
 
     if unsupported:
 
@@ -492,7 +508,6 @@ def add_files():
             + "\n".join(unsupported)
 
         )
-
 
     status_label.config(
 
@@ -512,7 +527,6 @@ def refresh_file_list():
         tk.END
     )
 
-
     for index, file_path in enumerate(
 
         selected_files,
@@ -529,7 +543,6 @@ def refresh_file_list():
 
         )
 
-
     file_count_label.config(
 
         text=f"{len(selected_files)} Datei(en)"
@@ -545,22 +558,17 @@ def remove_file():
 
     selection = file_listbox.curselection()
 
-
     if not selection:
 
         return
 
-
     index = selection[0]
-
 
     selected_files.pop(
         index
     )
 
-
     refresh_file_list()
-
 
     preview_label.config(
 
@@ -569,7 +577,6 @@ def remove_file():
         text="Keine Vorschau"
 
     )
-
 
     preview_label.image = None
 
@@ -584,7 +591,6 @@ def clear_files():
 
         return
 
-
     answer = messagebox.askyesno(
 
         "Liste leeren",
@@ -593,17 +599,13 @@ def clear_files():
 
     )
 
-
     if not answer:
 
         return
 
-
     selected_files.clear()
 
-
     refresh_file_list()
-
 
     preview_label.config(
 
@@ -613,9 +615,7 @@ def clear_files():
 
     )
 
-
     preview_label.image = None
-
 
     status_label.config(
         text="Dateiliste wurde geleert."
@@ -630,19 +630,15 @@ def move_up():
 
     selection = file_listbox.curselection()
 
-
     if not selection:
 
         return
 
-
     index = selection[0]
-
 
     if index == 0:
 
         return
-
 
     selected_files[index - 1], selected_files[index] = (
 
@@ -652,9 +648,7 @@ def move_up():
 
     )
 
-
     refresh_file_list()
-
 
     file_listbox.selection_set(
         index - 1
@@ -669,19 +663,15 @@ def move_down():
 
     selection = file_listbox.curselection()
 
-
     if not selection:
 
         return
 
-
     index = selection[0]
-
 
     if index >= len(selected_files) - 1:
 
         return
-
 
     selected_files[index + 1], selected_files[index] = (
 
@@ -691,9 +681,7 @@ def move_down():
 
     )
 
-
     refresh_file_list()
-
 
     file_listbox.selection_set(
         index + 1
@@ -708,14 +696,11 @@ def file_selected(event=None):
 
     global current_preview_image
 
-
     selection = file_listbox.curselection()
-
 
     if not selection:
 
         return
-
 
     file_path = Path(
 
@@ -725,9 +710,7 @@ def file_selected(event=None):
 
     )
 
-
     extension = file_path.suffix.lower()
-
 
     # ========================================================
     # Bild
@@ -741,16 +724,13 @@ def file_selected(event=None):
                 file_path
             )
 
-
             image = ImageOps.exif_transpose(
                 image
             )
 
-
             show_preview_image(
                 image
             )
-
 
         except Exception as error:
 
@@ -761,7 +741,6 @@ def file_selected(event=None):
                 text=f"Vorschau nicht möglich:\n{error}"
 
             )
-
 
     # ========================================================
     # PDF erste Seite
@@ -775,16 +754,13 @@ def file_selected(event=None):
                 file_path
             )
 
-
             if len(document) == 0:
 
                 document.close()
 
                 return
 
-
             page = document[0]
-
 
             pixmap = page.get_pixmap(
 
@@ -797,7 +773,6 @@ def file_selected(event=None):
 
             )
 
-
             image = Image.open(
 
                 BytesIO(
@@ -806,14 +781,11 @@ def file_selected(event=None):
 
             )
 
-
             document.close()
-
 
             show_preview_image(
                 image
             )
-
 
         except Exception as error:
 
@@ -824,7 +796,6 @@ def file_selected(event=None):
                 text=f"PDF-Vorschau nicht möglich:\n{error}"
 
             )
-
 
     # ========================================================
     # Word / PowerPoint
@@ -845,7 +816,6 @@ def file_selected(event=None):
 
         )
 
-
         preview_label.image = None
 
 
@@ -857,9 +827,7 @@ def show_preview_image(image):
 
     global current_preview_image
 
-
     preview = image.copy()
-
 
     preview.thumbnail(
 
@@ -872,11 +840,9 @@ def show_preview_image(image):
 
     )
 
-
     photo = ImageTk.PhotoImage(
         preview
     )
-
 
     preview_label.config(
 
@@ -885,7 +851,6 @@ def show_preview_image(image):
         text=""
 
     )
-
 
     preview_label.image = photo
 
@@ -906,11 +871,9 @@ def preprocess_pil_image(
         pil_image
     )
 
-
     pil_image = pil_image.convert(
         "RGB"
     )
-
 
     # --------------------------------------------------------
     # Originalbild verwenden
@@ -920,11 +883,9 @@ def preprocess_pil_image(
 
         return pil_image
 
-
     image = np.array(
         pil_image
     )
-
 
     # RGB -> Graustufen
     gray = cv2.cvtColor(
@@ -935,15 +896,12 @@ def preprocess_pil_image(
 
     )
 
-
     height, width = gray.shape
-
 
     largest_side = max(
         width,
         height
     )
-
 
     # ========================================================
     # Kleine Bilder vergrößern
@@ -953,21 +911,17 @@ def preprocess_pil_image(
 
         scale = 2.5
 
-
     elif largest_side < 2000:
 
         scale = 2.0
-
 
     elif largest_side < 3000:
 
         scale = 1.5
 
-
     else:
 
         scale = 1.0
-
 
     if scale != 1.0:
 
@@ -985,7 +939,6 @@ def preprocess_pil_image(
 
         )
 
-
     # ========================================================
     # Kontrast verbessern
     # ========================================================
@@ -998,11 +951,9 @@ def preprocess_pil_image(
 
     )
 
-
     gray = clahe.apply(
         gray
     )
-
 
     # ========================================================
     # Rauschen reduzieren
@@ -1021,7 +972,6 @@ def preprocess_pil_image(
         searchWindowSize=21
 
     )
-
 
     # ========================================================
     # Automatisch
@@ -1045,7 +995,6 @@ def preprocess_pil_image(
 
         )
 
-
     # ========================================================
     # Sanft
     # ========================================================
@@ -1053,7 +1002,6 @@ def preprocess_pil_image(
     elif mode == "Sanft":
 
         processed = gray
-
 
     # ========================================================
     # Stark
@@ -1074,7 +1022,6 @@ def preprocess_pil_image(
 
         )
 
-
     # ========================================================
     # Weißer Rand
     # ========================================================
@@ -1094,7 +1041,6 @@ def preprocess_pil_image(
 
     )
 
-
     return Image.fromarray(
         processed
     )
@@ -1112,11 +1058,9 @@ def ocr_pil_image(
         language_box.get()
     ]
 
-
     processing_mode = (
         processing_box.get()
     )
-
 
     processed_image = preprocess_pil_image(
 
@@ -1126,16 +1070,18 @@ def ocr_pil_image(
 
     )
 
-
     # --------------------------------------------------------
     # PSM 3:
     # automatische Seitenerkennung
     # --------------------------------------------------------
 
     config = (
-        "--oem 3 --psm 3"
-    )
 
+        f'--tessdata-dir "{TESSDATA_FOLDER}" '
+        '--oem 3 '
+        '--psm 3'
+
+    )
 
     text = pytesseract.image_to_string(
 
@@ -1148,7 +1094,6 @@ def ocr_pil_image(
         timeout=180
 
     )
-
 
     return clean_text(
         text
@@ -1165,7 +1110,6 @@ def clean_text(text):
 
         return ""
 
-
     lines = [
 
         line.rstrip()
@@ -1174,12 +1118,10 @@ def clean_text(text):
 
     ]
 
-
     # Zu viele Leerzeilen vermeiden
     cleaned_lines = []
 
     previous_empty = False
-
 
     for line in lines:
 
@@ -1187,19 +1129,15 @@ def clean_text(text):
             not line.strip()
         )
 
-
         if is_empty and previous_empty:
 
             continue
-
 
         cleaned_lines.append(
             line
         )
 
-
         previous_empty = is_empty
-
 
     return "\n".join(
         cleaned_lines
@@ -1230,7 +1168,6 @@ def has_substantial_text(text):
 
         return False
 
-
     characters = [
 
         character
@@ -1240,7 +1177,6 @@ def has_substantial_text(text):
         if character.isalnum()
 
     ]
-
 
     return len(characters) >= 80
 
@@ -1257,11 +1193,9 @@ def extract_from_image(
         file_path
     )
 
-
     text = ocr_pil_image(
         image
     )
-
 
     return (
         "===== OCR aus Bild =====\n\n"
@@ -1283,11 +1217,9 @@ def render_pdf_page(
 
     dpi = 300
 
-
     zoom = (
         dpi / 72
     )
-
 
     pixmap = page.get_pixmap(
 
@@ -1300,11 +1232,9 @@ def render_pdf_page(
 
     )
 
-
     image_bytes = pixmap.tobytes(
         "png"
     )
-
 
     image = Image.open(
 
@@ -1314,9 +1244,7 @@ def render_pdf_page(
 
     )
 
-
     image.load()
-
 
     return image
 
@@ -1332,19 +1260,15 @@ def extract_pdf_images_text(
 
     results = []
 
-
     images = page.get_images(
         full=True
     )
 
-
     image_number = 0
-
 
     for image_info in images:
 
         xref = image_info[0]
-
 
         try:
 
@@ -1352,16 +1276,13 @@ def extract_pdf_images_text(
                 xref
             )
 
-
             image_bytes = extracted.get(
                 "image"
             )
 
-
             if not image_bytes:
 
                 continue
-
 
             image = Image.open(
 
@@ -1370,7 +1291,6 @@ def extract_pdf_images_text(
                 )
 
             )
-
 
             # ------------------------------------------------
             # Sehr kleine Bilder sind oft:
@@ -1384,7 +1304,6 @@ def extract_pdf_images_text(
 
             width, height = image.size
 
-
             if (
                 width < 120
                 or height < 60
@@ -1392,14 +1311,11 @@ def extract_pdf_images_text(
 
                 continue
 
-
             image_number += 1
-
 
             text = ocr_pil_image(
                 image
             )
-
 
             # Nur sinnvolle Ergebnisse übernehmen
             if len(text.strip()) >= 3:
@@ -1413,13 +1329,11 @@ def extract_pdf_images_text(
 
                 )
 
-
         except Exception:
 
             # Ein kaputtes oder ungewöhnliches Bild
             # soll nicht die ganze PDF stoppen.
             continue
-
 
     return results
 
@@ -1436,14 +1350,11 @@ def extract_from_pdf(
         file_path
     )
 
-
     complete_parts = []
-
 
     total_pages = len(
         document
     )
-
 
     try:
 
@@ -1455,11 +1366,9 @@ def extract_from_pdf(
                 page_index
             ]
 
-
             page_number = (
                 page_index + 1
             )
-
 
             update_detail_status(
 
@@ -1467,7 +1376,6 @@ def extract_from_pdf(
                 f"von {total_pages}"
 
             )
-
 
             # =================================================
             # Normalen PDF-Text lesen
@@ -1481,13 +1389,11 @@ def extract_from_pdf(
 
             )
 
-
             page_parts = [
 
                 f"===== PDF Seite {page_number} ====="
 
             ]
-
 
             # =================================================
             # FALL A / C:
@@ -1506,11 +1412,9 @@ def extract_from_pdf(
                     "\n[PDF-Text]\n"
                 )
 
-
                 page_parts.append(
                     native_text
                 )
-
 
                 image_results = (
                     extract_pdf_images_text(
@@ -1522,13 +1426,11 @@ def extract_from_pdf(
                     )
                 )
 
-
                 if image_results:
 
                     page_parts.append(
                         "\n[Text aus Bildern]\n"
                     )
-
 
                     for (
                         image_number,
@@ -1541,11 +1443,9 @@ def extract_from_pdf(
 
                         )
 
-
                         page_parts.append(
                             image_text
                         )
-
 
             # =================================================
             # FALL B:
@@ -1561,16 +1461,13 @@ def extract_from_pdf(
                     "\n[OCR der gesamten Seite]\n"
                 )
 
-
                 page_image = render_pdf_page(
                     page
                 )
 
-
                 ocr_text = ocr_pil_image(
                     page_image
                 )
-
 
                 if ocr_text:
 
@@ -1578,13 +1475,11 @@ def extract_from_pdf(
                         ocr_text
                     )
 
-
                 else:
 
                     page_parts.append(
                         "[Kein Text erkannt]"
                     )
-
 
             complete_parts.append(
 
@@ -1594,11 +1489,9 @@ def extract_from_pdf(
 
             )
 
-
     finally:
 
         document.close()
-
 
     return "\n\n".join(
         complete_parts
@@ -1615,7 +1508,6 @@ def extract_word_tables(
 
     table_parts = []
 
-
     for table_index, table in enumerate(
 
         document.tables,
@@ -1625,7 +1517,6 @@ def extract_word_tables(
     ):
 
         rows = []
-
 
         for row in table.rows:
 
@@ -1637,7 +1528,6 @@ def extract_word_tables(
 
             ]
 
-
             rows.append(
 
                 " | ".join(
@@ -1645,7 +1535,6 @@ def extract_word_tables(
                 )
 
             )
-
 
         if rows:
 
@@ -1655,7 +1544,6 @@ def extract_word_tables(
                 + "\n".join(rows)
 
             )
-
 
     return table_parts
 
@@ -1669,7 +1557,6 @@ def extract_word_images(
 ):
 
     image_results = []
-
 
     # DOCX ist intern eine ZIP-Datei.
     with zipfile.ZipFile(
@@ -1689,7 +1576,6 @@ def extract_word_images(
 
         ]
 
-
         for index, media_name in enumerate(
 
             media_files,
@@ -1704,7 +1590,6 @@ def extract_word_images(
                     media_name
                 )
 
-
                 image = Image.open(
 
                     BytesIO(
@@ -1713,9 +1598,7 @@ def extract_word_images(
 
                 )
 
-
                 width, height = image.size
-
 
                 if (
                     width < 120
@@ -1724,11 +1607,9 @@ def extract_word_images(
 
                     continue
 
-
                 text = ocr_pil_image(
                     image
                 )
-
 
                 if len(text.strip()) >= 3:
 
@@ -1742,11 +1623,9 @@ def extract_word_images(
 
                     )
 
-
             except Exception:
 
                 continue
-
 
     return image_results
 
@@ -1763,13 +1642,11 @@ def extract_from_word(
         file_path
     )
 
-
     parts = [
 
         "===== Word Dokument ====="
 
     ]
-
 
     # ========================================================
     # Normaler Text
@@ -1785,13 +1662,11 @@ def extract_from_word(
 
     ]
 
-
     if paragraphs:
 
         parts.append(
             "\n[Word-Text]\n"
         )
-
 
         parts.append(
 
@@ -1801,7 +1676,6 @@ def extract_from_word(
 
         )
 
-
     # ========================================================
     # Tabellen
     # ========================================================
@@ -1810,13 +1684,11 @@ def extract_from_word(
         document
     )
 
-
     if tables:
 
         parts.append(
             "\n[Tabellen]\n"
         )
-
 
         parts.append(
 
@@ -1826,7 +1698,6 @@ def extract_from_word(
 
         )
 
-
     # ========================================================
     # Bilder
     # ========================================================
@@ -1835,13 +1706,11 @@ def extract_from_word(
         file_path
     )
 
-
     if image_results:
 
         parts.append(
             "\n[Text aus eingebetteten Bildern]\n"
         )
-
 
         for (
             image_number,
@@ -1856,11 +1725,9 @@ def extract_from_word(
 
             )
 
-
             parts.append(
                 image_text
             )
-
 
     if (
         not paragraphs
@@ -1871,7 +1738,6 @@ def extract_from_word(
         parts.append(
             "\n[Kein Text gefunden]"
         )
-
 
     return "\n".join(
         parts
@@ -1890,14 +1756,11 @@ def extract_from_powerpoint(
         file_path
     )
 
-
     result_parts = []
-
 
     total_slides = len(
         presentation.slides
     )
-
 
     for slide_index, slide in enumerate(
 
@@ -1914,19 +1777,15 @@ def extract_from_powerpoint(
 
         )
 
-
         slide_parts = [
 
             f"===== PowerPoint Folie {slide_index} ====="
 
         ]
 
-
         slide_texts = []
 
-
         image_texts = []
-
 
         # ====================================================
         # Shapes durchsuchen
@@ -1949,13 +1808,11 @@ def extract_from_powerpoint(
                         shape.text
                     )
 
-
                     if text:
 
                         slide_texts.append(
                             text
                         )
-
 
             # ------------------------------------------------
             # Bild
@@ -1967,7 +1824,6 @@ def extract_from_powerpoint(
 
                     image_bytes = shape.image.blob
 
-
                     image = Image.open(
 
                         BytesIO(
@@ -1976,9 +1832,7 @@ def extract_from_powerpoint(
 
                     )
 
-
                     width, height = image.size
-
 
                     if (
                         width < 120
@@ -1987,11 +1841,9 @@ def extract_from_powerpoint(
 
                         continue
 
-
                     text = ocr_pil_image(
                         image
                     )
-
 
                     if len(text.strip()) >= 3:
 
@@ -1999,11 +1851,9 @@ def extract_from_powerpoint(
                             text
                         )
 
-
                 except Exception:
 
                     continue
-
 
         # ====================================================
         # Direkter Text
@@ -2015,7 +1865,6 @@ def extract_from_powerpoint(
                 "\n[PowerPoint-Text]\n"
             )
 
-
             slide_parts.append(
 
                 "\n\n".join(
@@ -2023,7 +1872,6 @@ def extract_from_powerpoint(
                 )
 
             )
-
 
         # ====================================================
         # OCR-Bilder
@@ -2034,7 +1882,6 @@ def extract_from_powerpoint(
             slide_parts.append(
                 "\n[Text aus Bildern]\n"
             )
-
 
             for image_index, image_text in enumerate(
 
@@ -2050,11 +1897,9 @@ def extract_from_powerpoint(
 
                 )
 
-
                 slide_parts.append(
                     image_text
                 )
-
 
         if (
             not slide_texts
@@ -2065,7 +1910,6 @@ def extract_from_powerpoint(
                 "\n[Kein Text gefunden]"
             )
 
-
         result_parts.append(
 
             "\n".join(
@@ -2073,7 +1917,6 @@ def extract_from_powerpoint(
             )
 
         )
-
 
     return "\n\n".join(
         result_parts
@@ -2088,11 +1931,9 @@ def start_extraction():
 
     global extraction_running
 
-
     if extraction_running:
 
         return
-
 
     if not selected_files:
 
@@ -2106,32 +1947,25 @@ def start_extraction():
 
         return
 
-
     if not check_tesseract():
 
         return
 
-
     extraction_running = True
-
 
     extract_button.config(
         state="disabled"
     )
 
-
     save_button.config(
         state="disabled"
     )
 
-
     progress_bar["value"] = 0
-
 
     progress_bar["maximum"] = len(
         selected_files
     )
-
 
     result_text.delete(
 
@@ -2141,13 +1975,11 @@ def start_extraction():
 
     )
 
-
     status_label.config(
 
         text="Textextraktion wird gestartet..."
 
     )
-
 
     threading.Thread(
 
@@ -2167,11 +1999,9 @@ def run_extraction():
     global extraction_results
     global extraction_running
 
-
     try:
 
         extraction_results = []
-
 
         for index, file_path_string in enumerate(
             selected_files
@@ -2181,9 +2011,7 @@ def run_extraction():
                 file_path_string
             )
 
-
             extension = file_path.suffix.lower()
-
 
             window.after(
 
@@ -2201,7 +2029,6 @@ def run_extraction():
 
             )
 
-
             # =================================================
             # Bild
             # =================================================
@@ -2211,7 +2038,6 @@ def run_extraction():
                 extracted_text = extract_from_image(
                     file_path
                 )
-
 
             # =================================================
             # PDF
@@ -2223,7 +2049,6 @@ def run_extraction():
                     file_path
                 )
 
-
             # =================================================
             # Word
             # =================================================
@@ -2233,7 +2058,6 @@ def run_extraction():
                 extracted_text = extract_from_word(
                     file_path
                 )
-
 
             # =================================================
             # PowerPoint
@@ -2247,13 +2071,11 @@ def run_extraction():
                     )
                 )
 
-
             else:
 
                 extracted_text = (
                     "[Dateiformat nicht unterstützt]"
                 )
-
 
             extraction_results.append(
 
@@ -2269,7 +2091,6 @@ def run_extraction():
 
             )
 
-
             window.after(
 
                 0,
@@ -2283,7 +2104,6 @@ def run_extraction():
 
             )
 
-
         window.after(
 
             0,
@@ -2291,7 +2111,6 @@ def run_extraction():
             extraction_finished
 
         )
-
 
     except Exception as error:
 
@@ -2304,7 +2123,6 @@ def run_extraction():
             str(error)
 
         )
-
 
     finally:
 
@@ -2343,16 +2161,13 @@ def extraction_finished():
         state="normal"
     )
 
-
     save_button.config(
         state="normal"
     )
 
-
     detail_status_label.config(
         text=""
     )
-
 
     result_text.delete(
 
@@ -2361,7 +2176,6 @@ def extraction_finished():
         tk.END
 
     )
-
 
     for index, result in enumerate(
 
@@ -2375,7 +2189,6 @@ def extraction_finished():
             result["file"]
         ).name
 
-
         result_text.insert(
 
             tk.END,
@@ -2386,7 +2199,6 @@ def extraction_finished():
 
         )
 
-
         result_text.insert(
 
             tk.END,
@@ -2394,7 +2206,6 @@ def extraction_finished():
             f"DATEI {index}: {file_name}\n"
 
         )
-
 
         result_text.insert(
 
@@ -2405,7 +2216,6 @@ def extraction_finished():
 
         )
 
-
         result_text.insert(
 
             tk.END,
@@ -2414,7 +2224,6 @@ def extraction_finished():
 
         )
 
-
         result_text.insert(
 
             tk.END,
@@ -2422,7 +2231,6 @@ def extraction_finished():
             "\n\n"
 
         )
-
 
     status_label.config(
 
@@ -2433,7 +2241,6 @@ def extraction_finished():
 
     )
 
-
     answer = messagebox.askyesno(
 
         "Extraktion abgeschlossen",
@@ -2442,7 +2249,6 @@ def extraction_finished():
         "Möchtest du das Ergebnis jetzt speichern?"
 
     )
-
 
     if answer:
 
@@ -2461,16 +2267,13 @@ def extraction_failed(
         state="normal"
     )
 
-
     detail_status_label.config(
         text=""
     )
 
-
     status_label.config(
         text="Extraktion fehlgeschlagen."
     )
-
 
     messagebox.showerror(
 
@@ -2506,7 +2309,6 @@ def copy_text():
 
     text = get_edited_text()
 
-
     if not text:
 
         messagebox.showwarning(
@@ -2519,14 +2321,11 @@ def copy_text():
 
         return
 
-
     window.clipboard_clear()
-
 
     window.clipboard_append(
         text
     )
-
 
     status_label.config(
 
@@ -2545,7 +2344,6 @@ def clear_result():
 
         return
 
-
     answer = messagebox.askyesno(
 
         "Text löschen",
@@ -2554,11 +2352,9 @@ def clear_result():
 
     )
 
-
     if not answer:
 
         return
-
 
     result_text.delete(
 
@@ -2567,7 +2363,6 @@ def clear_result():
         tk.END
 
     )
-
 
     save_button.config(
         state="disabled"
@@ -2603,35 +2398,28 @@ def show_export_dialog():
 
         return
 
-
     dialog = tk.Toplevel(
         window
     )
-
 
     dialog.title(
         "Ergebnis speichern"
     )
 
-
     dialog.geometry(
         "450x410"
     )
-
 
     dialog.resizable(
         False,
         False
     )
 
-
     dialog.transient(
         window
     )
 
-
     dialog.grab_set()
-
 
     tk.Label(
 
@@ -2649,7 +2437,6 @@ def show_export_dialog():
         pady=(25, 5)
     )
 
-
     tk.Label(
 
         dialog,
@@ -2663,21 +2450,17 @@ def show_export_dialog():
         pady=(0, 20)
     )
 
-
     txt_var = tk.BooleanVar(
         value=True
     )
-
 
     word_var = tk.BooleanVar(
         value=False
     )
 
-
     ppt_var = tk.BooleanVar(
         value=False
     )
-
 
     tk.Checkbutton(
 
@@ -2702,7 +2485,6 @@ def show_export_dialog():
 
     )
 
-
     tk.Checkbutton(
 
         dialog,
@@ -2725,7 +2507,6 @@ def show_export_dialog():
         pady=8
 
     )
-
 
     tk.Checkbutton(
 
@@ -2750,11 +2531,9 @@ def show_export_dialog():
 
     )
 
-
     def save_selected():
 
         formats = []
-
 
         if txt_var.get():
 
@@ -2762,20 +2541,17 @@ def show_export_dialog():
                 "txt"
             )
 
-
         if word_var.get():
 
             formats.append(
                 "docx"
             )
 
-
         if ppt_var.get():
 
             formats.append(
                 "pptx"
             )
-
 
         if not formats:
 
@@ -2791,24 +2567,19 @@ def show_export_dialog():
 
             return
 
-
         dialog.destroy()
-
 
         export_results(
             formats
         )
 
-
     button_frame = tk.Frame(
         dialog
     )
 
-
     button_frame.pack(
         pady=30
     )
-
 
     tk.Button(
 
@@ -2829,7 +2600,6 @@ def show_export_dialog():
         padx=8
 
     )
-
 
     tk.Button(
 
@@ -2866,11 +2636,9 @@ def export_results(
 
     )
 
-
     if not output_folder:
 
         return
-
 
     base_name = simpledialog.askstring(
 
@@ -2882,17 +2650,14 @@ def export_results(
 
     )
 
-
     if not base_name:
 
         return
-
 
     # Ungültige Windows-Zeichen ersetzen
     invalid_characters = (
         '<>:"/\\|?*'
     )
-
 
     for character in invalid_characters:
 
@@ -2904,14 +2669,11 @@ def export_results(
 
         )
 
-
     output_folder = Path(
         output_folder
     )
 
-
     saved_files = []
-
 
     try:
 
@@ -2929,16 +2691,13 @@ def export_results(
 
             )
 
-
             save_as_txt(
                 file_path
             )
 
-
             saved_files.append(
                 file_path.name
             )
-
 
         # ====================================================
         # Word
@@ -2954,16 +2713,13 @@ def export_results(
 
             )
 
-
             save_as_word(
                 file_path
             )
 
-
             saved_files.append(
                 file_path.name
             )
-
 
         # ====================================================
         # PowerPoint
@@ -2979,16 +2735,13 @@ def export_results(
 
             )
 
-
             save_as_powerpoint(
                 file_path
             )
 
-
             saved_files.append(
                 file_path.name
             )
-
 
         answer = messagebox.askyesno(
 
@@ -3001,13 +2754,11 @@ def export_results(
 
         )
 
-
         if answer:
 
             os.startfile(
                 output_folder
             )
-
 
     except Exception as error:
 
@@ -3059,16 +2810,13 @@ def set_word_rtl(
         WD_ALIGN_PARAGRAPH.RIGHT
     )
 
-
     paragraph_properties = (
         paragraph._p.get_or_add_pPr()
     )
 
-
     bidi = OxmlElement(
         "w:bidi"
     )
-
 
     paragraph_properties.append(
         bidi
@@ -3085,7 +2833,6 @@ def save_as_word(
 
     document = Document()
 
-
     title = document.add_heading(
 
         "Extrahierter Dokumenttext",
@@ -3094,21 +2841,17 @@ def save_as_word(
 
     )
 
-
     if is_persian_mode():
 
         set_word_rtl(
             title
         )
 
-
     text = get_edited_text()
-
 
     for line in text.splitlines():
 
         paragraph = document.add_paragraph()
-
 
         if is_persian_mode():
 
@@ -3116,18 +2859,15 @@ def save_as_word(
                 paragraph
             )
 
-
         run = paragraph.add_run(
             line
         )
-
 
         run.font.name = "Arial"
 
         run.font.size = Pt(
             12
         )
-
 
     document.save(
         file_path
@@ -3145,11 +2885,9 @@ def split_text_for_slides(
 
     lines = text.splitlines()
 
-
     chunks = []
 
     current = ""
-
 
     for line in lines:
 
@@ -3160,7 +2898,6 @@ def split_text_for_slides(
             + line
 
         ).strip()
-
 
         if (
             len(proposed)
@@ -3173,21 +2910,17 @@ def split_text_for_slides(
                     current.strip()
                 )
 
-
             current = line
-
 
         else:
 
             current = proposed
-
 
     if current:
 
         chunks.append(
             current.strip()
         )
-
 
     return chunks
 
@@ -3202,16 +2935,13 @@ def save_as_powerpoint(
 
     presentation = Presentation()
 
-
     presentation.slide_width = Inches(
         13.333
     )
 
-
     presentation.slide_height = Inches(
         7.5
     )
-
 
     # ========================================================
     # Titelfolie
@@ -3223,13 +2953,11 @@ def save_as_powerpoint(
 
     )
 
-
     title_slide.shapes.title.text = (
 
         "Extrahierter Dokumenttext"
 
     )
-
 
     title_slide.placeholders[1].text = (
 
@@ -3237,7 +2965,6 @@ def save_as_powerpoint(
         f"Quelldatei(en)"
 
     )
-
 
     # ========================================================
     # Textfolien
@@ -3248,7 +2975,6 @@ def save_as_powerpoint(
         get_edited_text()
 
     )
-
 
     for index, chunk in enumerate(
 
@@ -3264,13 +2990,11 @@ def save_as_powerpoint(
 
         )
 
-
         slide.shapes.title.text = (
 
             f"Text {index} von {len(chunks)}"
 
         )
-
 
         text_box = slide.shapes.add_textbox(
 
@@ -3284,20 +3008,15 @@ def save_as_powerpoint(
 
         )
 
-
         text_frame = text_box.text_frame
 
-
         text_frame.word_wrap = True
-
 
         paragraph = (
             text_frame.paragraphs[0]
         )
 
-
         paragraph.text = chunk
-
 
         if is_persian_mode():
 
@@ -3305,13 +3024,11 @@ def save_as_powerpoint(
                 PP_ALIGN.RIGHT
             )
 
-
         else:
 
             paragraph.alignment = (
                 PP_ALIGN.LEFT
             )
-
 
         for run in paragraph.runs:
 
@@ -3320,7 +3037,6 @@ def save_as_powerpoint(
             run.font.size = PPTPt(
                 18
             )
-
 
     presentation.save(
         file_path
