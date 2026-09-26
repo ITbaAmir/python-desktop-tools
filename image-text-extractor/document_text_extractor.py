@@ -212,16 +212,7 @@ TESSDATA_FOLDER = BASE_FOLDER / "tessdata"
 
 
 def tesseract_config(psm):
-
-    # pytesseract zerlegt den Konfigurationsstring unter Windows.
-    # Vorwärtsschrägstriche verhindern, dass C:\\... als Escape
-    # interpretiert wird; Anführungszeichen erhalten Leerzeichen.
-    data_dir = TESSDATA_FOLDER.resolve().as_posix()
-
-    return (
-        f'--tessdata-dir "{data_dir}" '
-        f'--oem 3 --psm {psm}'
-    )
+    return f"--oem 3 --psm {psm}"
 
 # ============================================================
 # Unterstützte Dateiendungen
@@ -445,6 +436,7 @@ def check_tesseract():
 
     # Eine vorhandene Datei allein beweist nicht, dass Tesseract
     # sie am konfigurierten Pfad auch laden kann.
+    os.environ["TESSDATA_PREFIX"] = str(TESSDATA_FOLDER.resolve())
     try:
 
         pytesseract.image_to_string(
@@ -1131,7 +1123,8 @@ def ocr_pil_image(
     # automatische Seitenerkennung
     # --------------------------------------------------------
 
-    config = tesseract_config(3)
+    os.environ["TESSDATA_PREFIX"] = str(TESSDATA_FOLDER.resolve())
+    config = "--oem 3 --psm 3"
 
     text = pytesseract.image_to_string(
 
