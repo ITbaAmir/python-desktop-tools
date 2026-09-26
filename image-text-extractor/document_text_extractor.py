@@ -435,7 +435,7 @@ def check_tesseract():
         return False
 
     # Eine vorhandene Datei allein beweist nicht, dass Tesseract
-    # sie am konfigurierten Pfad auch laden kann.
+    # sie am konfigurierten Pfad auch laden kann
     os.environ["TESSDATA_PREFIX"] = str(TESSDATA_FOLDER.resolve())
     try:
 
