@@ -99,6 +99,9 @@ import os
 import shutil
 import threading
 import zipfile
+import re
+import subprocess
+import tempfile
 
 from io import BytesIO
 from pathlib import Path
@@ -162,6 +165,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.enum.table import WD_TABLE_ALIGNMENT
 
 
 # ============================================================
@@ -185,6 +190,10 @@ selected_files = []
 
 extraction_results = []
 
+# Neu: Seitenweise PDF-Texte und OCR-Hinweise für den bearbeitbaren
+# Word-Export. Die bisherigen Textergebnisse bleiben unverändert.
+pdf_page_results = {}
+
 extraction_running = False
 
 current_preview_image = None
@@ -201,9 +210,23 @@ BASE_FOLDER = Path(__file__).resolve().parent
 
 TESSDATA_FOLDER = BASE_FOLDER / "tessdata"
 
+
+def tesseract_config(psm):
+
+    # pytesseract zerlegt den Konfigurationsstring unter Windows.
+    # Vorwärtsschrägstriche verhindern, dass C:\\... als Escape
+    # interpretiert wird; Anführungszeichen erhalten Leerzeichen.
+    data_dir = TESSDATA_FOLDER.resolve().as_posix()
+
+    return (
+        f'--tessdata-dir "{data_dir}" '
+        f'--oem 3 --psm {psm}'
+    )
+
 # ============================================================
 # Unterstützte Dateiendungen
 # ============================================================
+
 
 IMAGE_EXTENSIONS = {
 
@@ -416,6 +439,38 @@ def check_tesseract():
             + "\n\n"
             f"Erwarteter Ordner:\n{TESSDATA_FOLDER}"
 
+        )
+
+        return False
+
+    # Eine vorhandene Datei allein beweist nicht, dass Tesseract
+    # sie am konfigurierten Pfad auch laden kann.
+    try:
+
+        pytesseract.image_to_string(
+            Image.new("RGB", (160, 60), "white"),
+            lang=language_code,
+            config=tesseract_config(3),
+            timeout=30
+        )
+
+    except Exception as error:
+
+        messagebox.showerror(
+            "OCR-Sprachtest fehlgeschlagen",
+            "Tesseract konnte die gewählten Sprachdateien "
+            "nicht laden.\n\n"
+            f"Sprachordner: {TESSDATA_FOLDER.resolve()}\n"
+            "Erwartet: "
+            + ", ".join(
+                f"{language}.traineddata"
+                for language in required_languages
+            )
+            + "\n\n"
+            "Bitte das komplette ZIP-Paket entpacken und "
+            "prüfen, ob der Ordner 'tessdata' direkt neben "
+            "dieser Python-Datei liegt.\n\n"
+            f"Technischer Fehler:\n{error}"
         )
 
         return False
@@ -1051,7 +1106,8 @@ def preprocess_pil_image(
 # ============================================================
 
 def ocr_pil_image(
-    image
+    image,
+    return_details=False
 ):
 
     language = LANGUAGES[
@@ -1075,13 +1131,7 @@ def ocr_pil_image(
     # automatische Seitenerkennung
     # --------------------------------------------------------
 
-    config = (
-
-        f'--tessdata-dir "{TESSDATA_FOLDER}" '
-        '--oem 3 '
-        '--psm 3'
-
-    )
+    config = tesseract_config(3)
 
     text = pytesseract.image_to_string(
 
@@ -1095,9 +1145,43 @@ def ocr_pil_image(
 
     )
 
-    return clean_text(
-        text
-    )
+    text = clean_text(text)
+    warnings = []
+
+    # Bei zu wenig Text wird eine sanfte Bildversion mit PSM 6
+    # versucht. Das Original wird nicht durch Fantasiezeichen ersetzt.
+    if len(text) < 140:
+
+        alternative = pytesseract.image_to_string(
+
+            preprocess_pil_image(image, "Sanft"),
+
+            lang=language,
+
+            config=tesseract_config(6),
+
+            timeout=180
+
+        )
+
+        alternative = clean_text(alternative)
+
+        if len(alternative) > len(text):
+
+            text = alternative
+            warnings.append("OCR-Fallback mit PSM 6 verwendet")
+
+    if len(text) < 40:
+
+        warnings.append(
+            "Sehr wenig Text erkannt; Seite am Scan prüfen"
+        )
+
+    if return_details:
+
+        return text, warnings
+
+    return text
 
 
 # ============================================================
@@ -1266,9 +1350,32 @@ def extract_pdf_images_text(
 
     image_number = 0
 
+    seen_xrefs = set()
+
     for image_info in images:
 
         xref = image_info[0]
+
+        if xref in seen_xrefs:
+
+            continue
+
+        seen_xrefs.add(xref)
+
+        # Eine OCR-Textebene liegt oft über einem ganzen Scanbild.
+        # Dessen erneute OCR würde den Seiteninhalt verdoppeln.
+        try:
+
+            if any(
+                rect.get_area() > page.rect.get_area() * 0.65
+                for rect in page.get_image_rects(xref)
+            ):
+
+                continue
+
+        except Exception:
+
+            pass
 
         try:
 
@@ -1352,6 +1459,8 @@ def extract_from_pdf(
 
     complete_parts = []
 
+    page_records = []
+
     total_pages = len(
         document
     )
@@ -1408,6 +1517,10 @@ def extract_from_pdf(
                 native_text
             ):
 
+                page_body = native_text
+
+                page_warnings = []
+
                 page_parts.append(
                     "\n[PDF-Text]\n"
                 )
@@ -1447,6 +1560,11 @@ def extract_from_pdf(
                             image_text
                         )
 
+                        page_body += (
+                            f"\n\n[Text aus Bild {image_number}]\n"
+                            + image_text
+                        )
+
             # =================================================
             # FALL B:
             #
@@ -1465,9 +1583,12 @@ def extract_from_pdf(
                     page
                 )
 
-                ocr_text = ocr_pil_image(
-                    page_image
+                ocr_text, page_warnings = ocr_pil_image(
+                    page_image,
+                    return_details=True
                 )
+
+                page_body = ocr_text
 
                 if ocr_text:
 
@@ -1489,9 +1610,21 @@ def extract_from_pdf(
 
             )
 
+            page_records.append({
+                "number": page_number,
+                "text": page_body,
+                "origin": (
+                    "PDF-Text" if has_substantial_text(native_text)
+                    else "OCR"
+                ),
+                "warnings": page_warnings
+            })
+
     finally:
 
         document.close()
+
+    pdf_page_results[str(Path(file_path).resolve())] = page_records
 
     return "\n\n".join(
         complete_parts
@@ -2003,6 +2136,8 @@ def run_extraction():
 
         extraction_results = []
 
+        pdf_page_results.clear()
+
         for index, file_path_string in enumerate(
             selected_files
         ):
@@ -2384,6 +2519,345 @@ def is_persian_mode():
 # Exportdialog
 # ============================================================
 
+def edited_pdf_pages():
+
+    # Die vorhandenen Seitenmarkierungen bleiben beim Bearbeiten
+    # im rechten Textfeld stehen. So gelangen Korrekturen auch in
+    # den seitengetreuen Word-Export.
+    text = get_edited_text()
+
+    chunks = re.split(
+        r"(?m)^===== PDF Seite (\d+) =====\s*$",
+        text
+    )
+
+    expected = sum(
+        len(pdf_page_results.get(str(Path(item["file"]).resolve()), []))
+        for item in extraction_results
+        if Path(item["file"]).suffix.lower() == ".pdf"
+    )
+
+    if (len(chunks) - 1) // 2 != expected:
+
+        return None
+
+    pages = []
+
+    for index in range(1, len(chunks), 2):
+
+        body = chunks[index + 1]
+
+        # Der nächste Datei-Header ist kein Teil der PDF-Seite.
+        body = re.split(r"(?m)^={70}\s*$", body, maxsplit=1)[0]
+
+        body = re.sub(
+            r"(?m)^\[(?:PDF-Text|OCR der gesamten Seite)\]\s*$",
+            "",
+            body
+        )
+
+        pages.append((int(chunks[index]), body.strip()))
+
+    original_numbers = [
+        page["number"]
+        for item in extraction_results
+        if Path(item["file"]).suffix.lower() == ".pdf"
+        for page in pdf_page_results.get(
+            str(Path(item["file"]).resolve()), []
+        )
+    ]
+
+    if [number for number, _ in pages] != original_numbers:
+
+        return None
+
+    return [body for _, body in pages]
+
+
+def add_word_text(paragraph, text, size, bold=False):
+
+    set_word_rtl(paragraph)
+
+    # Lateinische Wörter bleiben LTR innerhalb eines RTL-Absatzes.
+    for part in re.split(r"([A-Za-z][A-Za-z0-9 ._-]*)", text):
+
+        if not part:
+
+            continue
+
+        run = paragraph.add_run(part)
+        run.font.name = "DejaVu Sans"
+        run.font.size = Pt(size)
+        run.bold = bold
+
+        direction = OxmlElement("w:rtl")
+        direction.set(
+            qn("w:val"),
+            "0" if re.match(r"[A-Za-z]", part) else "1"
+        )
+        run._element.get_or_add_rPr().append(direction)
+
+
+def add_writing_line(paragraph):
+
+    border = OxmlElement("w:pBdr")
+
+    for name in ("bottom", "between"):
+
+        edge = OxmlElement("w:" + name)
+
+        for key, value in (
+            ("val", "single"),
+            ("sz", "4"),
+            ("color", "999999")
+        ):
+
+            edge.set(qn("w:" + key), value)
+
+        border.append(edge)
+
+    paragraph._p.get_or_add_pPr().append(border)
+
+
+def save_pdf_as_styled_word(source_path, pages, file_path):
+
+    document = Document()
+    section = document.sections[0]
+
+    # Format und Notizspalte entsprechen der ersten Lektion.
+    section.page_width = Pt(612)
+    section.page_height = Pt(792)
+    section.top_margin = Pt(36)
+    section.bottom_margin = Pt(32.4)
+    section.left_margin = Pt(39.6)
+    section.right_margin = Pt(39.6)
+    section.footer_distance = Pt(24)
+
+    for index, page in enumerate(pages):
+
+        if index:
+
+            document.add_page_break()
+
+        table = document.add_table(rows=1, cols=2)
+        table.autofit = False
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.columns[0].width = Pt(72)
+        table.columns[1].width = Pt(464.4)
+
+        notes, body = table.rows[0].cells
+        notes.width = Pt(72)
+        body.width = Pt(464.4)
+
+        cell_borders = OxmlElement("w:tcBorders")
+        edge = OxmlElement("w:right")
+
+        for key, value in (
+            ("val", "single"),
+            ("sz", "6"),
+            ("color", "888888")
+        ):
+
+            edge.set(qn("w:" + key), value)
+
+        cell_borders.append(edge)
+        notes._tc.get_or_add_tcPr().append(cell_borders)
+
+        notes.text = ""
+        add_word_text(notes.paragraphs[0], "یادداشت ها", 15, True)
+        notes.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        body.text = ""
+        add_word_text(
+            body.paragraphs[0],
+            source_path.stem,
+            20,
+            True
+        )
+        body.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        blocks = [
+            block.strip()
+            for block in re.split(r"\n\s*\n", page["text"])
+            if block.strip()
+        ]
+
+        density = len(page["text"].splitlines())
+        font_size = 14.5 if density > 58 else 16 if density > 45 else 18.5
+
+        for block_index, block in enumerate(blocks):
+
+            paragraph = body.add_paragraph()
+
+            heading = (
+                len(block) < 100
+                and (
+                    block_index < 2
+                    or block.startswith(
+                        ("بخش ", "مطالعه ", "الف-", "ب-")
+                    )
+                )
+            )
+
+            add_word_text(
+                paragraph,
+                re.sub(r"\s*\n\s*", " ", block),
+                font_size + 0.5 if heading else font_size,
+                heading
+            )
+
+            paragraph.paragraph_format.space_after = Pt(
+                3 if heading else 1
+            )
+
+        # Bei kurzen Übungsseiten einen editierbaren Schreibbereich.
+        if len(blocks) < 10:
+
+            for _ in range(8):
+
+                paragraph = body.add_paragraph()
+                paragraph.paragraph_format.space_after = Pt(14)
+                add_writing_line(paragraph)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    page_field = OxmlElement("w:fldSimple")
+    page_field.set(qn("w:instr"), "PAGE")
+    footer._p.append(page_field)
+
+    document.save(file_path)
+
+
+def render_word_for_review(file_path, original_count):
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+
+    if not soffice:
+
+        return "LibreOffice fehlt: Word-Seiten nicht gerendert."
+
+    folder = file_path.parent / (file_path.stem + "_Pruefung")
+    folder.mkdir(exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as temp_profile:
+
+        profile_uri = Path(temp_profile).resolve().as_uri()
+
+        subprocess.run(
+            [
+                soffice,
+                f"-env:UserInstallation={profile_uri}",
+                "--headless", "--convert-to", "pdf",
+                "--outdir", str(folder), str(file_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True
+        )
+
+    preview_pdf = folder / (file_path.stem + ".pdf")
+
+    if not preview_pdf.exists():
+
+        raise RuntimeError("LibreOffice hat keine PDF-Vorschau erzeugt.")
+
+    with pymupdf.open(preview_pdf) as rendered:
+
+        count = len(rendered)
+
+        for index, page in enumerate(rendered, 1):
+
+            image = page.get_pixmap(
+                matrix=pymupdf.Matrix(1.4, 1.4),
+                alpha=False
+            )
+
+            image.save(folder / f"Seite-{index:03}.png")
+
+    suffix = (
+        " – Seitenzahl abweichend: Layout prüfen"
+        if count != original_count else ""
+    )
+
+    return (
+        f"{file_path.name}: {count} Word-Seiten, "
+        f"{original_count} PDF-Seiten{suffix}; "
+        f"Seitenbilder in {folder.name}"
+    )
+
+
+def export_pdf_review(output_folder, base_name, render_pages):
+
+    pdf_items = [
+        item for item in extraction_results
+        if Path(item["file"]).suffix.lower() == ".pdf"
+    ]
+
+    if not pdf_items:
+
+        raise ValueError("Für diesen Export muss eine PDF ausgewählt sein.")
+
+    edited = edited_pdf_pages()
+    notes = [
+        "Prüfbericht: OCR ist keine bestätigte 1:1-Abschrift.",
+        "Namen, Zahlen, Bibelstellen und schwer lesbare Wörter am Original prüfen.",
+        ""
+    ]
+
+    if edited is None:
+
+        notes.append(
+            "Die PDF-Seitenmarkierungen im Textfeld wurden verändert. "
+            "Der stilisierte Word-Export verwendet den ursprünglichen "
+            "seitenweisen Text."
+        )
+
+    saved = []
+    position = 0
+
+    for file_index, item in enumerate(pdf_items, 1):
+
+        source = Path(item["file"])
+        originals = pdf_page_results[str(source.resolve())]
+        pages = []
+
+        for original in originals:
+
+            page = dict(original)
+
+            if edited is not None:
+
+                page["text"] = edited[position]
+
+            position += 1
+            pages.append(page)
+
+            for warning in page["warnings"]:
+
+                notes.append(
+                    f"{source.name}, Seite {page['number']}: {warning}"
+                )
+
+        suffix = f"_{file_index}" if len(pdf_items) > 1 else ""
+        target = output_folder / f"{base_name}{suffix}_bearbeitbar.docx"
+
+        save_pdf_as_styled_word(source, pages, target)
+        saved.append(target.name)
+
+        if render_pages:
+
+            notes.append(
+                render_word_for_review(target, len(pages))
+            )
+
+    report = output_folder / f"{base_name}_Pruefbericht.txt"
+    report.write_text("\n".join(notes), encoding="utf-8-sig")
+    saved.append(report.name)
+
+    return saved
+
+
 def show_export_dialog():
 
     if not get_edited_text():
@@ -2407,7 +2881,7 @@ def show_export_dialog():
     )
 
     dialog.geometry(
-        "450x410"
+        "480x510"
     )
 
     dialog.resizable(
@@ -2461,6 +2935,10 @@ def show_export_dialog():
     ppt_var = tk.BooleanVar(
         value=False
     )
+
+    styled_word_var = tk.BooleanVar(value=False)
+
+    render_word_var = tk.BooleanVar(value=False)
 
     tk.Checkbutton(
 
@@ -2531,6 +3009,20 @@ def show_export_dialog():
 
     )
 
+    tk.Checkbutton(
+        dialog,
+        text="PDF → bearbeitbares Word im Stil der ersten Lektion",
+        variable=styled_word_var,
+        font=("Segoe UI", 10)
+    ).pack(anchor="w", padx=35, pady=7)
+
+    tk.Checkbutton(
+        dialog,
+        text="Word-Seiten als Bilder zur Prüfung rendern",
+        variable=render_word_var,
+        font=("Segoe UI", 10)
+    ).pack(anchor="w", padx=35, pady=7)
+
     def save_selected():
 
         formats = []
@@ -2552,6 +3044,24 @@ def show_export_dialog():
             formats.append(
                 "pptx"
             )
+
+        if styled_word_var.get():
+
+            formats.append("styled_docx")
+
+        if render_word_var.get():
+
+            formats.append("render_word")
+
+        if "render_word" in formats and "styled_docx" not in formats:
+
+            messagebox.showwarning(
+                "Word-Seiten rendern",
+                "Bitte auch den PDF-zu-Word-Export auswählen.",
+                parent=dialog
+            )
+
+            return
 
         if not formats:
 
@@ -2743,6 +3253,18 @@ def export_results(
                 file_path.name
             )
 
+        # Neu: Für jede PDF ein eigener bearbeitbarer Word-Export,
+        # plus Prüfbericht und optional gerenderte Seitenbilder.
+        if "styled_docx" in formats:
+
+            saved_files.extend(
+                export_pdf_review(
+                    output_folder,
+                    base_name,
+                    "render_word" in formats
+                )
+            )
+
         answer = messagebox.askyesno(
 
             "Gespeichert",
@@ -2756,9 +3278,9 @@ def export_results(
 
         if answer:
 
-            os.startfile(
-                output_folder
-            )
+            if hasattr(os, "startfile"):
+
+                os.startfile(output_folder)
 
     except Exception as error:
 
