@@ -49,6 +49,8 @@ import threading
 
 import os
 
+import copy
+import time
 
 # ============================================================
 # Global variables
@@ -82,7 +84,102 @@ def choose_folder():
         text="Download folder selected."
     )
 
+# ============================================================
+# YouTube Download mit automatischen Fallbacks
+# ============================================================
 
+def run_ytdlp_with_fallback(url, base_options, download=True):
+    """
+    Versucht mehrere YouTube-Clients nacheinander.
+
+    Wenn ein Client fehlschlägt, wird der nächste versucht.
+    Die ursprünglichen Download-Einstellungen bleiben erhalten.
+    """
+
+    strategies = [
+        ("Standard", None),
+        ("Android", ["android"]),
+        ("Mobile Web", ["mweb"]),
+        ("Web Music", ["web_music"]),
+        ("Web Embedded", ["web_embedded"]),
+        (
+            "Standard ohne android_sdkless",
+            ["default", "-android_sdkless"]
+        ),
+    ]
+
+    errors = []
+
+    for index, (name, client_list) in enumerate(
+        strategies,
+        start=1
+    ):
+        # Alle bisherigen Download-Einstellungen übernehmen.
+        options = copy.deepcopy(base_options)
+
+        # Netzwerkfehler häufiger erneut versuchen.
+        options.update({
+            "retries": 10,
+            "fragment_retries": 10,
+            "extractor_retries": 5,
+            "file_access_retries": 5,
+            "sleep_interval_requests": 1,
+        })
+
+        # Für diesen Versuch den gewünschten Client verwenden.
+        if client_list:
+            options["extractor_args"] = {
+                "youtube": {
+                    "player_client": client_list
+                }
+            }
+        else:
+            # Die normale yt-dlp-Clientauswahl verwenden.
+            options.pop("extractor_args", None)
+
+        # Status in der Benutzeroberfläche aktualisieren.
+        window.after(
+            0,
+            lambda current=name: status_label.config(
+                text=f"YouTube: Versuche {current} ..."
+            )
+        )
+
+        try:
+            with yt_dlp.YoutubeDL(options) as downloader:
+
+                if download:
+                    result = downloader.download([url])
+
+                    if result not in (None, 0):
+                        raise RuntimeError(
+                            f"yt-dlp meldete Fehlercode {result}"
+                        )
+
+                    return None
+
+                return downloader.extract_info(
+                    url,
+                    download=False
+                )
+
+        except Exception as error:
+            errors.append(
+                f"{name}: {error}"
+            )
+
+            # Vor dem nächsten Versuch kurz warten.
+            if index < len(strategies):
+                time.sleep(2)
+
+    # Alle Versuche sind fehlgeschlagen.
+    details = "\n\n".join(errors)
+
+    raise RuntimeError(
+        "Alle automatischen Downloadversuche sind fehlgeschlagen.\n\n"
+        "Details:\n\n"
+        + details
+    )
 # ============================================================
 # Reset size information
 # ============================================================
@@ -542,18 +639,11 @@ def get_media_size(url):
 
         }
 
-        with yt_dlp.YoutubeDL(
-            info_options
-        ) as downloader:
-
-            info = downloader.extract_info(
-
-                url,
-
-                download=False
-
-            )
-
+        info = run_ytdlp_with_fallback(
+            url,
+            info_options,
+            download=False
+        )
         # ----------------------------------------------------
         # MP3 size
         # ----------------------------------------------------
@@ -1164,13 +1254,11 @@ def download_media(url):
                 selected_quality
             )
 
-        with yt_dlp.YoutubeDL(
-            options
-        ) as downloader:
-
-            downloader.download(
-                [url]
-            )
+        run_ytdlp_with_fallback(
+            url,
+            options,
+            download=True
+        )
 
         window.after(
 
